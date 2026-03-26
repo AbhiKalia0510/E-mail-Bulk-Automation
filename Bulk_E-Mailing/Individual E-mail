@@ -1,0 +1,328 @@
+# -*- coding: utf-8 -*-
+
+import requests
+import pandas as pd
+import os
+import win32com.client as win32
+from datetime import datetime, timedelta
+
+# ==============================
+# CONFIG
+# ==============================
+MAX_ATTACHMENT_MB = 30
+OUTPUT_FOLDER = r"C:\Users\abhishek.a\Downloads"
+
+TO_EMAIL = "test@gmail.com"
+CC_EMAIL = "test-2@gmail.com"
+SUBJECT = "Today’s Discussion – Exit Candidate "
+
+# ==============================
+# SALESFORCE AUTH
+# ==============================
+client_id = '-----'
+client_secret = '----'
+username = '-----'
+password = '-----'
+
+auth_url = (
+    "https://login.salesforce.com/services/oauth2/token"
+    f"?grant_type=password&client_id={client_id}"
+    f"&client_secret={client_secret}"
+    f"&username={username}&password={password}"
+)
+
+auth_response = requests.post(auth_url)
+auth_response.raise_for_status()
+auth_data = auth_response.json()
+
+access_token = auth_data["access_token"]
+instance_url = auth_data["instance_url"]
+
+print("✅ Authenticated")
+
+# ==============================
+# SOQL QUERY
+# ==============================
+soql_query = """
+SELECT SerialNumber, Location.Emp_Code__c, Location.Name, Product_Type__c, Product2.Name, QuantityOnHand, In_Transit__c
+FROM ProductItem
+WHERE Location.Emp_Code__c IN ('OR_6976') AND QuantityOnHand > 0
+"""
+
+query_url = f"{instance_url}/services/data/v58.0/query"
+headers = {"Authorization": f"Bearer {access_token}"}
+
+response = requests.get(query_url, headers=headers, params={"q": soql_query})
+response.raise_for_status()
+
+records = response.json().get("records", [])
+
+if not records:
+    print("No data found")
+    exit()
+
+df = pd.json_normalize(records)
+
+# ==============================
+# BUILD PIVOT HTML (ADVANCED)
+# ==============================
+def build_pivot_html(df):
+
+    location = df["Location.Name"].iloc[0]
+
+    # ✅ Custom Order (VERY IMPORTANT)
+    order = [
+        "Terminal(POS)",
+"Material",
+"Adapter",
+"Cable",
+"Battery",
+"Biometric",
+"Soundbox",
+"Stand",
+"Base",
+"Paper POS",
+"SIM",
+"Tool Kit",
+"Paper Rolls",
+"POSM Kit Stickers",
+"Back Cover",
+"Sticker",
+"Pendrive",
+"POS Stickers",
+"Tent Card"
+
+    ]
+
+    # Normalize column names (safety)
+    df["Product_Type__c"] = df["Product_Type__c"].fillna("Others")
+
+    html = f"""
+    <p style="font-family:Calibri;font-size:14px;">
+    Dear @Ajay Arunrao Mandwale,<br><br>
+    Please find the stock inventory with <b>{location}</b>.<br><br>
+    </p>
+
+    <table style="border-collapse:collapse;font-family:Calibri;font-size:14px;width:900px;">
+
+    <!-- Location Header -->
+    <tr style="background-color:#B7DEE8;font-weight:bold;border-bottom:3px solid #1F4E79;">
+        <td colspan="3" style="padding:10px;">
+            <b>Location: Location Name</b> &nbsp;&nbsp;&nbsp;&nbsp; {location}
+        </td>
+    </tr>
+
+    <!-- Column Header -->
+    <tr style="background-color:#D9E1F2;font-weight:bold;text-align:left;">
+        <th style="border:1px solid #000;padding:8px;">Product Type</th>
+        <th style="border:1px solid #000;padding:8px;">Product Name: Product Name</th>
+        <th style="border:1px solid #000;padding:8px;text-align:right;">Quantity On Hand</th>
+    </tr>
+    """
+
+    grand_total = 0
+
+    # ✅ Loop in custom order
+    for category in order:
+
+        group = df[df["Product_Type__c"] == category]
+
+        if group.empty:
+            continue
+
+        # Sort inside group
+        group = group.sort_values(by="Product2.Name")
+
+        category_total = 0
+
+        # Category Header (Grey strip like Excel)
+        html += f"""
+        <tr style="background-color:#BFBFBF;font-weight:bold;">
+            <td style="padding:6px;border:1px solid #000;color:#5B5B9E;">{category}</td>
+            <td style="border:1px solid #000;"></td>
+            <td style="border:1px solid #000;"></td>
+        </tr>
+        """
+
+        # Data Rows
+        for _, row in group.iterrows():
+
+            qty = int(row["QuantityOnHand"])
+            category_total += qty
+
+            html += f"""
+            <tr>
+                <td style="padding:6px;border-left:1px solid #000;border-right:1px solid #000;font-weight:bold;">
+                    {category}
+                </td>
+                <td style="padding:6px;border-right:1px solid #000;">
+                    {row['Product2.Name']}
+                </td>
+                <td style="padding:6px;border-right:1px solid #000;text-align:right;">
+                    {qty}
+                </td>
+            </tr>
+            """
+
+        # Category Total (Purple Excel style)
+        html += f"""
+        <tr style="background-color:#6F6FAE;color:white;font-weight:bold;">
+            <td style="padding:6px;border:1px solid #000;">{category} Total</td>
+            <td style="border:1px solid #000;"></td>
+            <td style="padding:6px;border:1px solid #000;text-align:right;">{category_total}</td>
+        </tr>
+        """
+
+        # Spacer row
+        html += """
+        <tr>
+            <td colspan="3" style="height:12px;border:none;"></td>
+        </tr>
+        """
+
+        grand_total += category_total
+
+    # Grand Total
+    html += f"""
+    <tr style="background-color:#A6A6A6;font-weight:bold;">
+        <td style="padding:8px;border:1px solid #000;">Grand Total</td>
+        <td style="border:1px solid #000;"></td>
+        <td style="padding:8px;border:1px solid #000;text-align:right;">{grand_total}</td>
+    </tr>
+
+    </table>
+    """
+
+    # Footer (exact format)
+    html += """
+    <br><br>
+    #Customer First<br><br>
+
+    Abhishek Kalia<br>
+    Senior Executive - Supply Chain Management | Pine Labs<br>
+    📞 +91 74287 36373 &nbsp;&nbsp; abhishek.a@pinelabs.com<br><br>
+
+    <b>Escalation Matrix:</b><br>
+    Sarvesh Pathak<br>
+    sarvesh.pathak@pinelabs.com
+    """
+
+    return html
+
+# ==============================
+# GENERATE HTML
+# ==============================
+html_body = build_pivot_html(df)
+
+# ==============================
+# THREAD DETECTION
+# ==============================
+
+def clean_subject(sub):
+    sub = sub.lower()
+    sub = sub.replace("RE:", "").replace("FW:", "").strip()
+    return sub
+
+def find_latest_thread(outlook, subject):
+
+    namespace = outlook.GetNamespace("MAPI")
+
+    folders = [
+        namespace.GetDefaultFolder(6),  # Inbox
+        namespace.GetDefaultFolder(5)   # Sent Items
+    ]
+
+    target = subject.lower().strip()
+
+    cutoff_date = (datetime.now() - timedelta(days=7)).strftime("%m/%d/%Y %H:%M %p")
+
+    for folder in folders:
+
+        try:
+            items = folder.Items
+            items.Sort("[ReceivedTime]", True)
+
+            # ✅ Restrict to last 7 days (VERY IMPORTANT)
+            filtered_items = items.Restrict(f"[ReceivedTime] >= '{cutoff_date}'")
+
+            for msg in filtered_items:
+
+                try:
+                    topic = str(msg.ConversationTopic).lower().strip()
+
+                    # ✅ KEY MATCH
+                    if target in topic:
+                        print(f"✅ Thread found in: {folder.Name}")
+                        return msg
+
+                except:
+                    continue
+
+        except:
+            continue
+
+    print("❌ No thread found")
+    return None
+
+# ==============================
+# SEND OR REPLY
+# ==============================
+def send_or_reply(outlook, subject, html_body, to_email, cc_email, attachment):
+
+    thread_mail = find_latest_thread(outlook, subject)
+
+    if thread_mail:
+        print("🔁 Replying to existing thread")
+
+        reply = thread_mail.ReplyAll()
+        reply.HTMLBody = html_body + "<br><br>" + reply.HTMLBody
+
+        if attachment:
+            reply.Attachments.Add(attachment)
+
+        reply.Send()
+
+    else:
+        print("📩 Creating NEW email (thread not found)")
+
+        mail = outlook.CreateItem(0)
+        mail.To = to_email
+        mail.CC = cc_email
+        mail.Subject = subject
+        mail.HTMLBody = html_body
+
+        if attachment:
+            mail.Attachments.Add(attachment)
+
+        mail.Send()
+
+# ==============================
+# EXPORT FILE
+# ==============================
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+file_path = os.path.join(OUTPUT_FOLDER, f"Stock_Report_{timestamp}.xlsx")
+df.to_excel(file_path, index=False)
+
+# ==============================
+# EMAIL SEND
+# ==============================
+outlook = win32.Dispatch("Outlook.Application")
+
+attachment = None
+if os.path.exists(file_path):
+    size_mb = os.path.getsize(file_path) / (1024 * 1024)
+    if size_mb <= MAX_ATTACHMENT_MB:
+        attachment = file_path
+
+html_body = build_pivot_html(df)
+
+send_or_reply(
+    outlook,
+    SUBJECT,
+    html_body,
+    TO_EMAIL,
+    CC_EMAIL,
+    attachment
+)
+
+print("✅ Process Completed")
